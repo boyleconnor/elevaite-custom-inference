@@ -1,0 +1,12 @@
+# This requirements file contains the requirements that are
+# Dependencies for testing
+ray[serve]
+# Dependencies for loading & serving the model:
+
+# # These are useful for loading most Huggingface models:
+# torch
+# transformers
+
+# # You'll probably need Pillow & python-multipart for models that take images as input:
+# Pillow
+# python-multipart

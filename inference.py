@@ -1,5 +1,8 @@
 import logging
 
+import numpy as np
+import torch
+from colpali_engine import ColPali, ColPaliProcessor
 from fastapi import FastAPI
 from pydantic import BaseModel
 from ray import serve
@@ -9,9 +12,7 @@ logger = logging.getLogger("ray.serve")
 
 
 class InferenceRequest(BaseModel):
-    # TODO: Add fields; this model defines the format that callers will use
-    #       to make inference requests
-    pass
+    queries: list[str]
 
 
 web_app = FastAPI()
@@ -28,12 +29,16 @@ class CustomDeployment:
         model_path: str,
         device: str,
     ):
-        # # Load the model into memory:
-        # self.model = load_model(model_path, device)  # TODO: Implement
-        raise NotImplementedError()
+        # Load the model into memory:
+        self.model = ColPali.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            device_map=device
+        ).eval()
+        self.processor = ColPaliProcessor.from_pretrained(model_path)
 
     @web_app.post("/infer")
-    def infer(self, inference_request: InferenceRequest) -> dict:
+    def infer_query(self, inference_request: InferenceRequest) -> list:
         """
         TODO: This docstring will be displayed on the OpenAPI spec &
               auto-generated Swagger web UI. Fill it with useful information
@@ -42,11 +47,20 @@ class CustomDeployment:
         :param inference_request:
         :return:
         """
-        # input_one = inference_request.some_field
-        # input_two = inference_request.some_other_field
-        raise NotImplementedError(
-            "This model's inference logic has not been implemented!"
-        )
+        queries = inference_request.queries
+
+        # Process the inputs
+        batch_queries = self.processor.process_queries(queries).to(self.model.device)
+
+        # Forward pass
+        with torch.no_grad():
+            query_embeddings_tensor = self.model(**batch_queries)
+        query_embeddings: np.ndarray = query_embeddings_tensor.cpu().float().numpy()
+
+        # NOTE: `query_embeddings` is a NumPy array, which is not JSON
+        #       serializable. Here we have to convert to a list so that
+        #       FastAPI can convert it JSON.
+        return query_embeddings.tolist()
 
     # TODO: Add other routes with other functionality, if desired
     @web_app.get("/other_route")

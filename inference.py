@@ -1,6 +1,10 @@
 import logging
 
-from fastapi import FastAPI
+import numpy as np
+import torch
+from PIL import Image
+from colpali_engine import ColPali, ColPaliProcessor
+from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 from ray import serve
 from ray.serve import Application
@@ -9,9 +13,7 @@ logger = logging.getLogger("ray.serve")
 
 
 class InferenceRequest(BaseModel):
-    # TODO: Add fields; this model defines the format that callers will use
-    #       to make inference requests
-    pass
+    queries: list[str]
 
 
 web_app = FastAPI()
@@ -28,12 +30,18 @@ class CustomDeployment:
         model_path: str,
         device: str,
     ):
-        # # Load the model into memory:
-        # self.model = load_model(model_path, device)  # TODO: Implement
-        raise NotImplementedError()
+        # Load the model into memory:
+        self.model: ColPali = ColPali.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            device_map=device
+        ).eval()
+        print(f"Type of model: {type(self.model)}")
+        self.processor: ColPaliProcessor = ColPaliProcessor.from_pretrained(model_path)
+        print(f"Type of processor: {type(self.processor)}")
 
     @web_app.post("/infer")
-    def infer(self, inference_request: InferenceRequest) -> dict:
+    def infer_query(self, inference_request: InferenceRequest) -> list:
         """
         TODO: This docstring will be displayed on the OpenAPI spec &
               auto-generated Swagger web UI. Fill it with useful information
@@ -42,16 +50,42 @@ class CustomDeployment:
         :param inference_request:
         :return:
         """
-        # input_one = inference_request.some_field
-        # input_two = inference_request.some_other_field
-        raise NotImplementedError(
-            "This model's inference logic has not been implemented!"
-        )
+        queries = inference_request.queries
+
+        # Process the inputs
+        batch_queries = self.processor.process_queries(queries).to(self.model.device)
+
+        # Forward pass
+        with torch.no_grad():
+            query_embeddings_tensor = self.model(**batch_queries)
+        query_embeddings: np.ndarray = query_embeddings_tensor.cpu().float().numpy()
+
+        # NOTE: `query_embeddings` is a NumPy array, which is not JSON
+        #       serializable. Here we have to convert to a list so that
+        #       FastAPI can convert it JSON.
+        return query_embeddings.tolist()
 
     # TODO: Add other routes with other functionality, if desired
-    @web_app.get("/other_route")
-    def other_functionality(self):
-        raise NotImplementedError()
+    @web_app.post("/infer_image")
+    def infer_image(
+        self,
+        image_files: list[UploadFile] = File([])
+    ):
+        # Process the inputs
+        images = [
+            Image.open(image_file.file).convert("RGB") for image_file in image_files
+        ]
+        batch_images = self.processor.process_images(images).to(self.model.device)
+
+        # Forward pass
+        with torch.no_grad():
+            image_embeddings_tensor = self.model(**batch_images)
+        image_embeddings: np.ndarray = image_embeddings_tensor.cpu().float().numpy()
+
+        # NOTE: `query_embeddings` is a NumPy array, which is not JSON
+        #       serializable. Here we have to convert to a list so that
+        #       FastAPI can convert it JSON.
+        return image_embeddings.tolist()
 
 
 def app_builder(args: dict) -> Application:
